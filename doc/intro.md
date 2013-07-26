@@ -11,12 +11,11 @@ Require the nio namespace
 
 Start nio server
 =======
-    (cnc/start-nio-server
-              {:server "127.0.0.1"
-              :port 9006
-              :socket-read-fn (fn
-                                [data]
-                                (println data))})
+    (cnc/start-nio-server (fn
+                             [data]
+                             (println data))
+                          "127.0.0.1"
+                          9006)
 
 Create nio client connection
 =======

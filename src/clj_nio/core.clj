@@ -8,6 +8,8 @@
             [clojure.stacktrace :as clj-stk]
             [clojure.data.json :as json]))
 
+(defonce server-running? true)
+
 
 (defn- selector [server-socket-channel]
   (let [selector (Selector/open)]
@@ -30,28 +32,27 @@
   (= (bit-and (.readyOps channel) state) state))
 
 
-(defn buffer->string
+(defn- buffer->string
   ([byte-buffer]
    (buffer->string byte-buffer (Charset/defaultCharset)))
   ([byte-buffer ^sun.nio.cs.UTF_8 charset]
-   (.toString (.decode (.newDecoder charset) byte-buffer))))
+     (.. charset newDecoder (decode byte-buffer) toString)))
 
 
 (defn- string->buffer
   ([string]
    (string->buffer string (Charset/defaultCharset)))
   ([string ^sun.nio.cs.UTF_8 charset]
-     (.encode (.newEncoder charset) (CharBuffer/wrap ^String string))))
+     (.. charset newEncoder (encode (CharBuffer/wrap ^String string)))))
 
 
-(defn accept-connection [server-socket selector]
-  (let [channel (-> server-socket (.accept) (.getChannel))]
-    (doto channel
-      (.configureBlocking false)
-      (.register selector SelectionKey/OP_READ))))
+(defn- accept-connection [server-socket selector]
+  (doto (.. server-socket accept getChannel)
+    (.configureBlocking false)
+    (.register selector SelectionKey/OP_READ)))
 
 
-(defn read-socket [selected-key socket-accept-fn]
+(defn- read-socket [selected-key read-callback]
   (let [socket-channel (.channel selected-key)
         buffer (ByteBuffer/allocate 4194304)]
     (.clear buffer)
@@ -61,39 +62,39 @@
       (do
         (.cancel selected-key)
         (.close (.socket socket-channel)))
-      (socket-accept-fn (binding [*read-eval* false]
-                          (json/read-str (buffer->string buffer) :key-fn keyword))))))
+      (read-callback (json/read-str (buffer->string buffer) :key-fn keyword)))))
 
 
-(defonce nio-server-flag true)
 
-
-(defn- run-server [selector server-socket socket-read-fn]
+(defn- run-server [selector server-socket read-callback]
   (try
-    (while nio-server-flag
-      (do
-        (when (> (.select selector) 0)
-          (let [selected-keys (.selectedKeys selector)]
-            (doseq [k selected-keys]
-              (condp state= k
-                SelectionKey/OP_ACCEPT
-                (accept-connection server-socket selector)
-                SelectionKey/OP_READ
-                (read-socket k socket-read-fn)))
-            (.clear selected-keys)))))
+    (while server-running?
+      (when (pos? (.select selector))
+        (let [selected-keys (.selectedKeys selector)]
+          (doseq [k selected-keys]
+            (condp state= k
+              SelectionKey/OP_ACCEPT
+              (accept-connection server-socket selector)
+              SelectionKey/OP_READ
+              (read-socket k read-callback)))
+          (.clear selected-keys))))
     (catch Throwable t
       (ctl/error "NIO server error : " (clj-stk/print-stack-trace t)))))
 
 
 (defn start-nio-server
-  [{:keys [server port socket-read-fn] :or {server "127.0.0.1" port 9005} :as config}]
-  (alter-var-root #'nio-server-flag (constantly true))
-  (future (apply run-server (conj (setup server port) socket-read-fn))))
+  ([read-callback]
+     (start-nio-server read-callback "127.0.0.1" 9006))
+  ([read-callback server]
+     (start-nio-server read-callback server 9006))
+  ([read-callback server port]
+     (alter-var-root #'server-running? (constantly true))
+     (future (apply run-server (conj (setup server port) read-callback)))))
 
 
 (defn stop-nio-server
   []
-  (alter-var-root #'nio-server-flag (constantly false)))
+  (alter-var-root #'server-running? (constantly false)))
 
 
 (defn setup-nio-client-socket
@@ -112,10 +113,11 @@
       (.write client buffer))))
 
 
-(comment (cnc/start-nio-server
-          {:server "127.0.0.1"
-           :port 9006
-           :socket-read-fn (fn [data] (println data))}))
+(comment (cnc/start-nio-server (fn
+                                 [data]
+                                 (println data))
+                               "127.0.0.1"
+                               9006))
 
 
 (comment (def *c
