@@ -3,10 +3,13 @@
      [java.net InetSocketAddress]
      [java.nio ByteBuffer CharBuffer]
      [java.nio.channels ServerSocketChannel SocketChannel Selector SelectionKey]
-     [java.nio.charset Charset CharsetEncoder CharsetDecoder])
+     [java.nio.charset Charset CharsetEncoder CharsetDecoder]
+     [java.util Arrays])
   (:require [clojure.tools.logging :as ctl]
             [clojure.stacktrace :as clj-stk]
-            [clojure.data.json :as json]))
+            [clojure.data.json :as json]
+            [taoensso.nippy :as nippy]))
+
 
 (defonce server-running? true)
 
@@ -32,7 +35,7 @@
   (= (bit-and (.readyOps channel) state) state))
 
 
-(defn- buffer->string
+(defn buffer->string
   ([byte-buffer]
    (buffer->string byte-buffer (Charset/defaultCharset)))
   ([byte-buffer ^sun.nio.cs.UTF_8 charset]
@@ -62,8 +65,15 @@
       (do
         (.cancel selected-key)
         (.close (.socket socket-channel)))
-      (read-callback (json/read-str (buffer->string buffer) :key-fn keyword)))))
-
+      (try
+        (read-callback (nippy/thaw
+                       (Arrays/copyOf
+                        (.array ^ByteBuffer buffer)
+                        (.remaining buffer))))
+        (catch Throwable t
+          (println "Exception : The buffer is "
+                   (buffer->string buffer)
+                   "and the error is : " t))))))
 
 
 (defn- run-server [selector server-socket read-callback]
@@ -108,14 +118,14 @@
 
 (defn write-to-nio-client-socket
   [client data]
-  (let [^ByteBuffer buffer (string->buffer (json/write-str data))]
+  (let [^ByteBuffer buffer (ByteBuffer/wrap (nippy/freeze data))]
     (while (.hasRemaining buffer)
       (.write client buffer))))
 
 
 (comment (cnc/start-nio-server (fn
                                  [data]
-                                 (println data))
+                                 data)
                                "127.0.0.1"
                                9006))
 
