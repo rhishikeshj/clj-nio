@@ -54,10 +54,11 @@
     (.configureBlocking false)
     (.register selector SelectionKey/OP_READ)))
 
+(defonce count* (atom 0))
+(defonce c-count* (atom 0))
 
-(defn- read-socket [selected-key read-callback]
-  (let [socket-channel (.channel selected-key)
-        buffer (ByteBuffer/allocate 4194304)]
+(defn- read-socket [selected-key read-callback ^ByteBuffer buffer]
+  (let [socket-channel (.channel selected-key)]
     (.clear buffer)
     (.read socket-channel buffer)
     (.flip buffer)
@@ -66,17 +67,19 @@
         (.cancel selected-key)
         (.close (.socket socket-channel)))
       (try
-        (read-callback (nippy/thaw
-                       (Arrays/copyOf
-                        (.array ^ByteBuffer buffer)
-                        (.remaining buffer))))
+        (doseq [s (clojure.string/split-lines (buffer->string
+                                               (ByteBuffer/wrap
+                                                (Arrays/copyOf (.array buffer)
+                                                               (.remaining buffer)))))]
+          (swap! count* inc)
+          (read-callback (json/read-str s)))
         (catch Throwable t
           (println "Exception : The buffer is "
                    (buffer->string buffer)
                    "and the error is : " t))))))
 
 
-(defn- run-server [selector server-socket read-callback]
+(defn- run-server [selector server-socket read-callback ^ByteBuffer buffer]
   (try
     (while server-running?
       (when (pos? (.select selector))
@@ -86,7 +89,7 @@
               SelectionKey/OP_ACCEPT
               (accept-connection server-socket selector)
               SelectionKey/OP_READ
-              (read-socket k read-callback)))
+              (read-socket k read-callback buffer)))
           (.clear selected-keys))))
     (catch Throwable t
       (ctl/error "NIO server error : " (clj-stk/print-stack-trace t)))))
@@ -99,7 +102,9 @@
      (start-nio-server read-callback server 9006))
   ([read-callback server port]
      (alter-var-root #'server-running? (constantly true))
-     (future (apply run-server (conj (setup server port) read-callback)))))
+     (future (apply run-server (conj (setup server port)
+                                     read-callback
+                                     (ByteBuffer/allocate 4194304))))))
 
 
 (defn stop-nio-server
@@ -118,7 +123,8 @@
 
 (defn write-to-nio-client-socket
   [client data]
-  (let [^ByteBuffer buffer (ByteBuffer/wrap (nippy/freeze data))]
+  (let [^ByteBuffer buffer (string->buffer (str (json/write-str data) "\n"))]
+    (swap! c-count* inc)
     (while (.hasRemaining buffer)
       (.write client buffer))))
 
